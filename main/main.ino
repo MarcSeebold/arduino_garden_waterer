@@ -1,8 +1,8 @@
 /*TODOs
- * 
- *
- * 
- */
+
+
+
+*/
 
 // External gClock
 #include <DS3231.h>
@@ -16,6 +16,10 @@
 // PIN A5 -> SCL (C)
 DS3231 gClock;
 boolean gh12, gPM;
+
+// PINS
+int pump = 7;
+
 // --------------------------------------------------------------------------------------------
 // ------------------------------------------ Setup -------------------------------------------
 // --------------------------------------------------------------------------------------------
@@ -31,7 +35,15 @@ void setup() {
 void setup_pins()
 {
   Serial.println("Setting up pins");
+  pinMode(pump, OUTPUT);
+  digitalWrite(pump, HIGH); // HIGH = off!
   Serial.println("Done: Setting up pins");
+}
+
+// false = off, true = on
+void set_pump(boolean state = false)
+{
+  digitalWrite(pump, state ? LOW : HIGH); // HIGH = off!
 }
 
 void setup_rtc()
