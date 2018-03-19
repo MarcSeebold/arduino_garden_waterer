@@ -1,13 +1,21 @@
-/*TODOs
 
 
+/*
+Plant Water System
+2017-2018 by Marc@Seebold.eu
 
+ToDos:
+- Create setting for when to water plants and how often
+- Add HW to sensor if there is water available (don't pump air)
+- Add setting for how long to pump
 */
 
 // External gClock
 #include <DS3231.h>
 // LCD display
 #include <LiquidCrystal_I2C.h>
+// Timer
+#include <TaskScheduler.h>
 
 // --------------------------------------------------------------------------------------------
 // ----------------------------------------- Globals ------------------------------------------
@@ -25,11 +33,16 @@ int pin_button_green = 3;
 int pin_button_red = 2;
 
 // Buttons
-volatile int button_red_was_pressed = false;
-volatile int button_green_was_pressed = false;
+volatile bool isr_button_red = false;
+volatile bool isr_button_green = false;
 
 // LCD display
-LiquidCrystal_I2C lcd(0x27,16,2); // set the LCD address to 0x27 for a 16 chars and 2 line
+LiquidCrystal_I2C lcd(0x27, 16, 2); // set the LCD address to 0x27 for a 16 chars and 2 line
+
+// Scheduler
+Scheduler runner;
+void callback_lcd();
+Task task_lcd(100, TASK_FOREVER, &callback_lcd);
 
 // --------------------------------------------------------------------------------------------
 // ------------------------------------------ Setup -------------------------------------------
@@ -45,13 +58,24 @@ void setup() {
 #endif
   setup_rtc();
   setup_lcd();
+  setup_scheduler();
+}
+
+void setup_scheduler()
+{
+  Serial.println("Setting up Scheduler");
+  runner.init();
+  runner.addTask(task_lcd);
+  task_lcd.enable();
+  Serial.println("Done: Setting up Scheduler");
 }
 
 void setup_lcd()
 {
   Serial.println("Setting up LCD");
   lcd.init(); //initialize the lcd
-  lcd.backlight(); //open the backlight 
+  lcd.backlight(); //open the backlight
+  lcd.clear();
   Serial.println("Done: Setting up LCD");
 }
 
@@ -61,18 +85,18 @@ void setup_pins()
   digitalWrite(pin_pump, HIGH); // HIGH = off!
   pinMode(pin_button_red, INPUT_PULLUP);
   pinMode(pin_button_green, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(pin_button_red), button_red_pressed, RISING);
-  attachInterrupt(digitalPinToInterrupt(pin_button_green), button_green_pressed, RISING);
+  attachInterrupt(digitalPinToInterrupt(pin_button_red), button_red_pressed, FALLING);
+  attachInterrupt(digitalPinToInterrupt(pin_button_green), button_green_pressed, FALLING);
 }
 
 void button_red_pressed()
 {
-  button_red_was_pressed = true;
+  isr_button_red = true;
 }
 
 void button_green_pressed()
 {
-  button_green_was_pressed = true;
+  isr_button_green = true;
 }
 
 void setup_rtc()
@@ -96,125 +120,142 @@ enum menu_pos_t
   SECOND
 };
 menu_pos_t menu_pos = menu_pos_t::HOUR;
-// -------------------------------------Set time buttons---------------------------------------
-void draw_menu()
+
+String get_time_as_string()
 {
-  // Draw time
-  lcd.clear();
-  lcd.setCursor(0,0);
   int hh = gClock.getHour(gh12, gPM);
   int mm = gClock.getMinute();
   int ss = gClock.getSecond();
-  lcd.print(String(hh) + ":" + String(mm) + ":" + String(ss));
+  String s_hh = time_to_str(hh);
+  String s_mm = time_to_str(mm);
+  String s_ss = time_to_str(ss);
+  return String(s_hh + ":" + s_mm + ":" + s_ss);
+  
+}
+
+// Draw the settings menu
+void draw_menu()
+{
+  // Draw time
+  lcd.setCursor(0, 0);
+  lcd.print(get_time_as_string());
   // Draw "cursor"
-  switch(menu_pos)
+  switch (menu_pos)
   {
-    case menu_pos_t::HOUR:    lcd.setCursor(0,1); break;
-    case menu_pos_t::MINUTE:  lcd.setCursor(3,1); break;
-    case menu_pos_t::SECOND:  lcd.setCursor(6,1); break;
+    case menu_pos_t::HOUR:    lcd.setCursor(0, 1); break;
+    case menu_pos_t::MINUTE:  lcd.setCursor(3, 1); break;
+    case menu_pos_t::SECOND:  lcd.setCursor(6, 1); break;
   }
   lcd.print("^^");
 }
 
+// Increase time on clock chip by 1 hour
 void time_increase_hour()
 {
   int old = gClock.getHour(gh12, gPM);
-  gClock.setHour((old+1)%24);
+  gClock.setHour((old + 1) % 24);
 }
 
+// Increase time on clock chip by 1 minute
 void time_increase_minute()
 {
   int old = gClock.getMinute();
-  gClock.setMinute((old+1)%60);
+  gClock.setMinute((old + 1) % 60);
 }
 
+// Increase time on clock chip by 1 second
 void time_increase_second()
 {
   int old = gClock.getSecond();
-  gClock.setSecond((old+1)%60);
+  gClock.setSecond((old + 1) % 60);
 }
 
+// Handle input via red_pressed and green_pressed variables that are set via ISR
 void handle_buttons()
 {
-  if (button_red_was_pressed || button_green_was_pressed)
+  // Pass to menu
+  handle_button_menu(isr_button_red, isr_button_green);
+  isr_button_red = false;
+  isr_button_green = false;
+}
+
+// Handle menu input
+void handle_button_menu(bool red_pressed, bool green_pressed)
+{
+  if (!red_pressed && !green_pressed)
+    return;
+
+  // Open menu (any button)
+  if (!in_menu)
   {
-    // Open menu (any button)
-    if (!in_menu)
+    lcd.clear();
+    in_menu = true;
+  }
+  // red button: Select next field
+  else if (red_pressed)
+  {
+    switch (menu_pos)
     {
-      in_menu = true;
-    }
-    // red button: Select next field
-    else if (button_red_was_pressed)
-    {
-      switch(menu_pos)
-      {
-        case menu_pos_t::HOUR:    menu_pos = menu_pos_t::MINUTE;                   break;
-        case menu_pos_t::MINUTE:  menu_pos = menu_pos_t::SECOND;                   break;
-        case menu_pos_t::SECOND:  menu_pos = menu_pos_t::HOUR;    in_menu = false; break;
-      }
-    }
-    // green button: Increase field
-    else if (button_green_was_pressed)
-    {
-      switch(menu_pos)
-      {
-        case menu_pos_t::HOUR:    time_increase_hour();   break;
-        case menu_pos_t::MINUTE:  time_increase_minute(); break;
-        case menu_pos_t::SECOND:  time_increase_second(); break;
-      }
+      case menu_pos_t::HOUR:    menu_pos = menu_pos_t::MINUTE;                                break;
+      case menu_pos_t::MINUTE:  menu_pos = menu_pos_t::SECOND;                                break;
+      case menu_pos_t::SECOND:  menu_pos = menu_pos_t::HOUR;    in_menu = false; lcd.clear(); break;
     }
   }
-  button_red_was_pressed = false;
-  button_green_was_pressed = false;
+  // green button: Increase field
+  else if (green_pressed)
+  {
+    switch (menu_pos)
+    {
+      case menu_pos_t::HOUR:    time_increase_hour();   break;
+      case menu_pos_t::MINUTE:  time_increase_minute(); break;
+      case menu_pos_t::SECOND:  time_increase_second(); break;
+    }
+  }
+}
+
+// Convert int to string. Adds a leading zero for single digits.
+String time_to_str(int num)
+{
+  return (num < 10 ? "0" : "") + String(num);
 }
 // --------------------------------------------------------------------------------------------
 
+// Start or stop pumping water
 // false = off, true = on
 void set_pump(boolean state = false)
 {
   digitalWrite(pin_pump, state ? LOW : HIGH); // HIGH = off!
 }
 
-void print_temperature()
+void print_time_and_temp()
 {
+  // Get data
   int temp = gClock.getTemperature();
-  lcd.clear();
-  lcd.print("The temperature:");
-  lcd.setCursor(0,1);
-  lcd.print(String(temp) + (char)223 + "C");
+  // Prepare LCD
+  lcd.setCursor(0, 0);
+  // First line: Some info
+  lcd.print("Plant Waterer");
+  // Second line: time
+  lcd.setCursor(0, 1);
+  lcd.print(String(temp) + (char)223 + "C - " + get_time_as_string());
 }
 
-void print_time()
-{
-  int hh = gClock.getHour(gh12, gPM);
-  int mm = gClock.getMinute();
-  int ss = gClock.getSecond();
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("The time is");
-  lcd.setCursor(0,1);
-  lcd.print(String(hh) + ":" + String(mm) + ":" + String(ss));
-}
-
-// MAIN LOOP
-void loop() {
+// Callback for task_lcd
+// Render LCD and handle buttons
+void callback_lcd() {
   handle_buttons();
   if (in_menu)
   {
     draw_menu();
-    delay(200);
     return;
   }
-  // put your main code here, to run repeatedly:
-  static bool a = false;
-  a = !a;
-  if (a)
-    print_time();
-  else
-    print_temperature();
+  print_time_and_temp();
+}
 
-  delay(2000);
-  Serial.println("ping");
+// MAIN LOOP
+void loop() {
+  // Everything managed by scheduler
+  runner.execute();
 }
 
 
